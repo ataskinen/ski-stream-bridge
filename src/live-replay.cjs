@@ -1,7 +1,7 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
-// Simulation uses real-shaped VOLA START records, but its status mapping is explicitly synthetic.
+// Archive replays retain synthetic status 0; generated demos opt into the supported VOLA manual-start mapping.
 class LiveReplay {
   constructor(folder, heat = 1, now = () => Date.now()) {
     this.folder = folder; this.plan = JSON.parse(fs.readFileSync(path.join(folder, 'replay-plan.json'), 'utf8'));
@@ -53,9 +53,9 @@ class LiveReplay {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const line = this.db.prepare(`SELECT COALESCE(MAX(C_LINE),0)+1 n FROM ${table}`).get().n;
-      this.db.prepare(`INSERT INTO ${table}(C_LINE,C_NUM,C_STATUS,C_HOUR1,C_HOUR2) VALUES(?,?,?,?,?)`).run(line,bib,0,String(micros),String(micros));
+      this.db.prepare(`INSERT INTO ${table}(C_LINE,C_NUM,C_STATUS,C_HOUR1,C_HOUR2) VALUES(?,?,?,?,?)`).run(line,bib,this.plan.startStatus ?? 0,String(micros),String(micros));
       this.bump(table);this.db.exec('COMMIT');
-      this.active.set(bib,{row,started:now,finishAt:now+(row.C_STATUS===0&&row.C_TIME>0?row.C_TIME:15000)}); this.lastStart=now;
+      this.active.set(bib,{row,started:now,finishAt:now+(row.C_STATUS===0&&row.C_TIME>0?row.C_TIME:(this.plan.nonFinishMs ?? 15000))}); this.lastStart=now;
     }catch(e){this.db.exec('ROLLBACK');throw e;}
     return true;
   }
@@ -63,7 +63,17 @@ class LiveReplay {
     const table=`TTIMEINFOS_HEAT${this.heat}`,keys=Object.keys(row);
     if(keys.some(k=>!/^C_[A-Z0-9_]+$/.test(k)))throw Error('Invalid column');
     this.db.exec('BEGIN IMMEDIATE');
-    try { this.db.prepare(`INSERT OR REPLACE INTO ${table} (${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`).run(...keys.map(k=>row[k]));this.bump(table);this.db.exec('COMMIT');this.active.delete(bib); }
+    try {
+      const terminal = this.plan.terminalRecordStatuses?.[row.C_STATUS];
+      if (terminal !== undefined) {
+        // Keep accepted START identity so terminal outcomes match the racer's active run.
+        const record = `TTIMERECORDS_HEAT${this.heat}_${row.C_STATUS === 1 ? 'START' : 'FINISH'}`;
+        const d = new Date(this.now());
+        const micros = ((d.getHours()*3600+d.getMinutes()*60+d.getSeconds())*1000+d.getMilliseconds())*1000;
+        this.db.prepare(`INSERT INTO ${record}(C_LINE,C_NUM,C_STATUS,C_HOUR2) VALUES((SELECT COALESCE(MAX(C_LINE),0)+1 FROM ${record}),?,?,?)`).run(bib,terminal,String(micros));
+        this.bump(record);
+      }
+      this.db.prepare(`INSERT OR REPLACE INTO ${table} (${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`).run(...keys.map(k=>row[k]));this.bump(table);this.db.exec('COMMIT');this.active.delete(bib); }
     catch(e){this.db.exec('ROLLBACK');throw e;}
   }
   tick({startIntervalMs=5000,maxActive=3,allowStart=true}={}) {

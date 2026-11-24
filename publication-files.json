@@ -22,6 +22,7 @@
     "src/reader.cjs",
     "src/replay.cjs",
     "src/server.cjs",
+    "src/synthetic-replay.cjs",
     "src/timing.cjs",
     "start-mac.sh",
     "start-windows.cmd",

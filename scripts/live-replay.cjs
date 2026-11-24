@@ -2,6 +2,7 @@ const path=require('node:path'),fs=require('node:fs'),readline=require('node:rea
 const {LiveReplay}=require('../src/live-replay.cjs');
 const args=process.argv.slice(2),get=(flag,fallback)=>args.includes(flag)?args[args.indexOf(flag)+1]:fallback;
 const folder=path.resolve(get('--folder','local/live-replay')),heat=Number(get('--heat','1'));
+if(args.includes('--synthetic'))require('../src/synthetic-replay.cjs').prepareSyntheticReplay(folder,{runTimeMs:Number(get('--run-ms','15000'))});
 const replay=new LiveReplay(folder,heat);
 replay.reset();
 function demoOrder() {
@@ -15,7 +16,7 @@ function demoOrder() {
 demoOrder();
 const d=new Date(),date=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
 const configFile=path.join(folder,'config.json'),config=JSON.parse(fs.readFileSync(configFile,'utf8'));
-config.heats=replay.plan.heats.filter(h=>h<=heat);config.timing={mode:'simulation',heat,date,utcOffsetMinutes:-d.getTimezoneOffset(),startStatuses:[0]};
+config.heats=replay.plan.heats.filter(h=>h<=heat);config.timing={mode:'simulation',heat,date,utcOffsetMinutes:-d.getTimezoneOffset(),startStatuses:[replay.plan.startStatus ?? 0]};
 fs.writeFileSync(configFile,JSON.stringify(config,null,2),{mode:0o600});
 let starts=false,last='',closed=false,lastCommand='',lastStatus=0,busy=false,heatDoneAt=null,phase='paused',needsSync=false;
 const commandFile=path.join(folder,'simulation-command.json');
@@ -35,18 +36,19 @@ async function command(action) {
  else if(action==='pause'){starts=false;phase='paused';}
  else if(action==='next')replay.startNext();
 }
-console.log('Prepared empty multi-heat simulation. Commands: resume, pause, next, reset, quit. Heat changes are automatic, with a 10-second results break.');
+console.log('Prepared empty multi-heat simulation. Commands: resume, pause, next, reset, quit. Heat changes and results breaks are automatic.');
+if(args.includes('--synthetic'))console.log('Start the bridge in another terminal: node src/cli.cjs --config '+path.relative(process.cwd(),configFile));
 const timer=setInterval(async()=>{
  if(busy||closed)return;busy=true;
  try {
   let c;try{c=JSON.parse(fs.readFileSync(commandFile,'utf8'));}catch{}
   if(c&&c.id!==lastCommand){lastCommand=c.id;await command(c.action);}
-  replay.tick({allowStart:starts&&!needsSync});
+  replay.tick({allowStart:starts&&!needsSync,startIntervalMs:replay.plan.startIntervalMs ?? 5000});
   if(replay.complete) {
    if(!replay.nextHeat){starts=false;phase='complete';}
    else if(starts){
     heatDoneAt??=Date.now();phase='between-heats';
-    if(Date.now()-heatDoneAt>=10000){const next=replay.nextHeat;await syncHeat(next);replay.setHeat(next);heatDoneAt=null;phase='running';}
+    if(Date.now()-heatDoneAt>=(replay.plan.breakMs ?? 10000)){const next=replay.nextHeat;await syncHeat(next);replay.setHeat(next);heatDoneAt=null;phase='running';}
    }
   }
   if(Date.now()-lastStatus>=500){const file=path.join(folder,'simulation-status.json');fs.writeFileSync(file+'.tmp',JSON.stringify({updatedAt:Date.now(),running:starts,phase,heat:replay.heat,started:replay.index,total:replay.queue.length,onCourse:replay.active.size}));fs.renameSync(file+'.tmp',file);lastStatus=Date.now();}

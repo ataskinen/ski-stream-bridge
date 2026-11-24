@@ -137,7 +137,7 @@ Install [Ski Stream Overlay](https://github.com/ataskinen/ski-stream-overlay) on
 3. Choose **VOLA SQLite Bridge** as the data source.
 4. Enter the timing PC's IP address and port `8789`. Use `127.0.0.1` only when both applications run on the same computer; do not enter `0.0.0.0` as a destination.
 5. Click **Copy connection key for OBS** on the bridge page and paste it into **Bridge connection key**.
-6. Enable **Testisyöte** for an archive/demo; save and connect.
+6. Enable **Test feed** for an archive/demo; save and connect.
 7. Add the native **Ski Race Overlay** source and select **Automatic race coverage**. Put video underneath it.
 
 A results-only initial snapshot starts category rotation immediately. A timing snapshot restores racers already on course without replaying historical finishes. New starts interrupt category rotation; Top 10 never covers active racers. Finish, DNF and DSQ use the overlay's configurable hold duration. After the course clears, the last finisher's category is shown until the configured idle threshold triggers rotation. The overlay's category display duration controls the interval, normally 10 seconds. Only categories with ranked finishes are cycled. Top 10 ranks are calculated within each category, with gaps to its leader. Competition name comes from VOLA; discipline remains an overlay setting.
@@ -202,16 +202,33 @@ The optional `timing` configuration enables the same reader on an actual timing 
   "mode": "records",
   "heat": 1,
   "date": "2026-11-24",
-  "utcOffsetMinutes": 120,
-  "startStatuses": [0]
+  "utcOffsetMinutes": 120
 }
 ```
 
-Treat the example status as a placeholder until verified by the timing operator. `mode: "off"` (or omitting timing) disables start reading; `mode: "simulation"` labels the synthetic adapter. With automatic standings, the bridge inspects available START tables for every heat and uses each racer’s latest heat; no heat change is required during the race. The configured timing heat remains an initial anchor. In advanced manual mode it must be the last selected heat. The date and UTC offset must match the timing device, including daylight-saving time; update them if the race crosses a date boundary. This adapter does not infer midnight rollover or device clock corrections.
+Routine setup requires no numeric status entry: live records default to the supported VOLA 14.1.08 manual-start status `131072`, while simulation defaults to synthetic status `0`. The known cancellation `131073` and DNS/DNF/DSQ statuses `131328`, `131584`, `131840` are excluded. This exact mapping does not infer support for other VOLA variants. `mode: "off"` (or omitting timing) disables start reading; `mode: "simulation"` labels the synthetic adapter. With automatic standings, the bridge inspects available START tables for every heat and uses each racer’s latest heat; no heat change is required during the race. The configured timing heat remains an initial anchor. In advanced manual mode it must be the last selected heat. The date and UTC offset must match the timing device, including daylight-saving time; update them if the race crosses a date boundary. This adapter does not infer midnight rollover or device clock corrections.
 
-Only explicitly accepted START statuses are read. `C_HOUR2` supplies the start clock; configured date/offset convert it to an absolute timestamp. A positive normal result or DNS/DNF/DSQ in the active heat removes that racer from the course. An absent result never automatically becomes DNF. Later corrections update standings. Clearing a previous run's result before restarting its bib is required. Unknown statuses are not guessed.
+The optional advanced custom mapping overrides accepted START statuses; leave it blank for automatic defaults. Existing explicit `startStatuses` values are preserved, including `[0]` in records mode; they are never silently migrated because a saved custom value cannot be distinguished from an old example. To use the new automatic mapping, clear the custom override in settings or remove `startStatuses` from the timing configuration. Only accepted START statuses are read. `C_HOUR2` supplies the start clock; configured date/offset convert it to an absolute timestamp. A positive normal result or DNS/DNF/DSQ in the active heat removes that racer from the course. An absent result never automatically becomes DNF. Later corrections update standings. Clearing a previous run's result before restarting its bib is required. Unknown statuses are not guessed.
 
 Snapshots include active racers and start anchors, so reconnecting restores current clocks without replaying old finishes. WebSocket frames contain the bridge clock; the OBS service uses it to align start timestamps to its local clock. Clocks are estimates between packets, freeze when the source is stale, and resume on a healthy state. Source/device clock offset still requires validation with VOLA. Selecting another competition disables the configured timing adapter until explicitly reconfigured.
+
+## Run a fully synthetic two-run demo
+
+No archive or personal data is needed. In one terminal, generate a **new direct child of `local/`** and start the paused writer:
+
+```sh
+node scripts/live-replay.cjs --synthetic --folder local/two-run-demo
+```
+
+In a second terminal, start the real bridge using its generated configuration:
+
+```sh
+node src/cli.cjs --config local/two-run-demo/config.json
+```
+
+Open the bridge page and use **Start / resume**, **Pause starts**, **Next racer** and **Reset simulation** as usual. There are 15 fictional racers in one category: 12 finish both runs, while the first-run DNF, DSQ and DNS racers finish run two with an individual time and no valid combined total. Up to three racers overlap; a results break separates the runs. Default run times are about 15 seconds. Add `--run-ms 3000` to the first command for a faster demo with shorter starts and breaks.
+
+The generator refuses every existing target and only creates fresh folders directly under ignored `local/`; it never opens an archive or real timing source. To repeat a generated demo, omit `--synthetic` and run the existing writer against that demo folder, or use **Reset simulation**. Generated databases, configuration and plans stay out of publication. This is a simulated sequence using the observed manual-start code `131072` and known terminal flags, not a complete model of every VOLA variant. Its explicit simulation mapping keeps the controls available; archived replay copies retain their existing synthetic status `0` behavior.
 
 ## Replay an archived competition into a test database
 
@@ -239,7 +256,7 @@ The writer accepts `resume`, `pause`, `next`, `reset` and `quit` followed by Ent
 
 Rows follow the first heat's start-list order when that table exists, with remaining result bibs appended. Each step restores **all archived heat rows for one bib in one transaction**, including DNS/DNF/DSQ, and increments the corresponding `TUPDATEVALUES` counters. With total standings selected, that competitor's final total appears immediately. This deliberately compresses a multi-heat competition; it does not reproduce the real chronological progression of heat 1 and heat 2.
 
-Keep OBS's **Testisyöte** option enabled. Names and result rows in `replay-plan.json` are private data and belong only in ignored `local/` folders. The bridge remains read-only; only the separate replay writer changes its newly created copy.
+Keep OBS's **Test feed** option enabled. Names and result rows in `replay-plan.json` are private data and belong only in ignored `local/` folders. The bridge remains read-only; only the separate replay writer changes its newly created copy.
 
 ## Validation and limits
 

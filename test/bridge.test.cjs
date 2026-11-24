@@ -312,6 +312,53 @@ test('second-run clocks and individual finishes remain available without a valid
   assert.notEqual(state.results[id]?.timeMs,15000);
  }
 });
+test('automatic records mapping accepts supported manual starts and excludes cancellation and outcomes', t => {
+ const {config,extra,edit,cleanups,folder}=fixture(t);
+ edit(extra,`DELETE FROM TTIMEINFOS_HEAT1 WHERE C_NUM=1;
+ CREATE TABLE TTIMERECORDS_HEAT1_START(C_LINE INTEGER,C_NUM INTEGER,C_STATUS INTEGER,C_HOUR2 TEXT);
+ INSERT INTO TTIMERECORDS_HEAT1_START VALUES(1,1,131072,'36000000000');`);
+ const timing={mode:'records',heat:1,date:'2026-01-01',utcOffsetMinutes:0};
+ const reader=new VolaReader({...config,heats:[1],timing});cleanups.push(()=>reader.close());
+ assert.deepEqual(reader.config.timing.startStatuses,[131072]);assert.equal(Object.keys(reader.read().active).length,1);
+ for(const status of [131073,131328,131584,131840,0]) {
+  edit(extra,`UPDATE TTIMERECORDS_HEAT1_START SET C_STATUS=${status}`);
+  assert.deepEqual(reader.read().active,{});assert.equal(reader.read().timing.lastStartAtMs,null);
+ }
+ const custom=new VolaReader({...config,heats:[1],timing:{...timing,startStatuses:[0]}});
+ const simulation=new VolaReader({...config,heats:[1],timing:{...timing,mode:'simulation'}});
+ cleanups.push(()=>custom.close(),()=>simulation.close());
+ assert.equal(Object.keys(custom.read().active).length,1);assert.equal(Object.keys(simulation.read().active).length,1);
+ assert.deepEqual(simulation.config.timing.startStatuses,[0]);
+ const file=path.join(folder,'mapping.json');
+ for(const startStatuses of [[131072],[0]]) {
+  fs.writeFileSync(file,JSON.stringify({...config,port:8789,pollIntervalMs:250,heats:[1],timing:{...timing,startStatuses}}));
+  assert.deepEqual(loadConfig(file).timing.startStatuses,startStatuses);
+ }
+ fs.writeFileSync(file,JSON.stringify({...config,port:8789,pollIntervalMs:250,heats:[1],timing:{...timing,startStatuses:[]}}));assert.throws(()=>loadConfig(file),/Invalid custom/);
+});
+test('settings UI saves automatic mapping without numeric entry and preserves optional overrides', async t => {
+ const {reader,config,folder,cleanups}=fixture(t),saved=[];
+ const bridge=new Bridge(reader,'test-key-not-a-real-secret',{...config,pollIntervalMs:250,logDirectory:path.join(folder,'logs')},new Logger(path.join(folder,'logs')),c=>saved.push(c));
+ await bridge.start();bridge.config.port=bridge.server.address().port;cleanups.push(()=>bridge.close());const url=`http://127.0.0.1:${bridge.server.address().port}`;
+ const elements=new Map();
+ const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false,selectedIndex:0,handlers:{},addEventListener(name,handler){this.handlers[name]=handler;},replaceChildren(){},append(){}});return elements.get(id);};
+ const vm=require('node:vm'),control=require('../src/control.cjs');
+ const context=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},fetch:(route,options)=>fetch(url+route,options),setInterval:()=>0,clearInterval(){}});
+ new vm.Script(control.script).runInContext(context);
+ await until(()=>element('port').value===bridge.server.address().port);
+ element('timing').value='records';element('timing-heat').value='1';element('date').value='2026-01-01';element('offset').value='0';
+ element('timing').handlers.change();assert.equal(element('statuses').required,false);assert.equal(element('statuses').disabled,true);
+ await element('selection').handlers.submit({preventDefault(){}});
+ assert.equal(element('error').textContent,'');assert.deepEqual(saved.at(-1).timing.startStatuses,[131072]);
+ assert.equal(element('custom-statuses').checked,false);assert.equal(element('statuses').value,'');
+ element('custom-statuses').checked=true;element('custom-statuses').handlers.change();element('statuses').value='0';
+ await element('selection').handlers.submit({preventDefault(){}});
+ assert.deepEqual(saved.at(-1).timing.startStatuses,[0]);assert.equal(element('custom-statuses').checked,true);assert.equal(element('statuses').value,'0');
+ element('statuses').value='';
+ await element('selection').handlers.submit({preventDefault(){}});
+ assert.deepEqual(saved.at(-1).timing.startStatuses,[131072]);assert.equal(element('custom-statuses').checked,false);assert.equal(element('statuses').value,'');
+ assert.match(control.html,/Override automatic start mapping/);
+});
 test('local competition selection needs no standings field and defaults to automatic mode', async t => {
  const {reader,config,folder,cleanups}=fixture(t);const bridge=new Bridge(reader,'test-key-not-a-real-secret',config,new Logger(path.join(folder,'logs')));
  await bridge.start();cleanups.push(()=>bridge.close());const url=`http://127.0.0.1:${bridge.server.address().port}`;
@@ -362,4 +409,63 @@ test('CLI keeps setup reachable when its VOLA folder is missing', async t => {
  assert.ok(state);assert.equal(state.health.ok,false);
  assert.deepEqual((await(await fetch(`http://127.0.0.1:${port}/control/events`)).json()).events,[]);
  assert.equal((await fetch(`http://127.0.0.1:${port}/control/settings`)).status,200);
+});
+
+test('fresh synthetic two-run scenario uses the real bridge and preserves run-only finishes after DNF/DSQ', async t => {
+ const {prepareSyntheticReplay}=require('../src/synthetic-replay.cjs'),{LiveReplay}=require('../src/live-replay.cjs');
+ const folder=path.resolve('local','synthetic-test-'+crypto.randomUUID());
+ const cleanup=[];t.after(async()=>{for(const close of cleanup.reverse())await close();fs.rmSync(folder,{recursive:true,force:true});});
+ const plan=prepareSyntheticReplay(folder,{runTimeMs:1000});
+ assert.throws(()=>prepareSyntheticReplay(folder),/exist/i);
+ assert.throws(()=>prepareSyntheticReplay(path.join(os.tmpdir(),'unsafe-synthetic-target')),/direct child/);
+ assert.equal(plan.rows[0].rows.filter(r=>r.C_STATUS===0).length,12);
+ let now=Date.parse('2026-01-01T12:00:00Z');const d=new Date(now);
+ const live=new LiveReplay(folder,1,()=>now);cleanup.push(()=>live.close());live.reset();
+ const date=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+ const config={...loadConfig(path.join(folder,'config.json')),port:0,pollIntervalMs:60000,timing:{mode:'simulation',heat:1,date,utcOffsetMinutes:-d.getTimezoneOffset(),startStatuses:[131072]}};
+ const reader=new VolaReader(config),bridge=new Bridge(reader,'synthetic-test-key',config,new Logger(path.join(folder,'logs')));
+ await bridge.start();cleanup.push(()=>bridge.close());const session=bridge.sessionId;
+ const ws=new WebSocket(`ws://127.0.0.1:${bridge.server.address().port}/api/v1/events`,{headers:{Authorization:'Bearer synthetic-test-key'}}),messages=[];
+ ws.on('message',raw=>messages.push(JSON.parse(raw)));cleanup.push(()=>ws.terminate());await until(()=>messages.length);
+ assert.equal(messages[0].type,'state.snapshot');assert.equal(Object.keys(messages[0].state.results).length,0);
+ const id=bib=>'event-1:competitor-'+bib;
+ live.startNext();now+=100;live.startNext();now+=100;live.startNext();bridge.poll();
+ assert.equal(Object.keys(bridge.state.active).length,3);
+ const firstRunIds=new Map(Object.values(bridge.state.active).map(r=>[r.bib,r.runId]));
+ assert.deepEqual(live.db.prepare('SELECT DISTINCT C_STATUS FROM TTIMERECORDS_HEAT1_START').all().map(r=>r.C_STATUS),[131072]);
+ now+=2000;live.tick({allowStart:false});bridge.poll();
+ assert.equal(Object.keys(bridge.state.active).length,0);assert.equal(bridge.state.runResults[id(13)].status,'dnf');assert.equal(bridge.state.runResults[id(14)].status,'dsq');
+ for(const bib of [13,14])assert.equal(bridge.state.runResults[id(bib)].runId,firstRunIds.get(String(bib)));
+ await until(()=>messages.some(m=>m.type==='state.delta'&&[13,14].every(bib=>m.changes.runResults?.upsert.some(r=>r.id===id(bib)&&r.runId===firstRunIds.get(String(bib))&&r.status===({13:'dnf',14:'dsq'}[bib])))));
+ const complete=()=>{for(let n=0;!live.complete&&n<1000;n++){live.tick({startIntervalMs:0,maxActive:3});now+=250;}assert.equal(live.complete,true);bridge.poll();};
+ complete();assert.equal(Object.values(bridge.state.results).filter(r=>r.status==='finish').length,12);
+ assert.deepEqual(live.db.prepare('SELECT DISTINCT C_STATUS FROM TTIMERECORDS_HEAT1_START ORDER BY C_STATUS').all().map(r=>r.C_STATUS),[131072,131328]);
+ assert.deepEqual(live.db.prepare('SELECT DISTINCT C_STATUS FROM TTIMERECORDS_HEAT1_FINISH ORDER BY C_STATUS').all().map(r=>r.C_STATUS),[131584,131840]);
+ live.setHeat(2);live.startNext();now+=100;live.startNext();now+=100;live.startNext();bridge.poll();
+ const started=bridge.state,runIds=new Map(Object.values(started.active).map(r=>[r.bib,r.runId]));
+ assert.equal(Object.keys(started.active).length,3);assert.equal(started.active[id(13)].heat,2);assert.equal(started.active[id(13)].totalEligible,false);assert.equal(started.active[id(14)].totalEligible,false);
+ assert.equal(started.active[id(13)].baseTimeMs,0);assert.equal(started.active[id(1)].totalEligible,true);assert.equal(started.active[id(1)].baseTimeMs,1110);
+ // Canceled raw finish/start records cannot manufacture an official completion or clock.
+ live.db.exec("INSERT INTO TTIMERECORDS_HEAT2_FINISH VALUES(1,1,131073,'43200000000');INSERT INTO TTIMERECORDS_HEAT2_START(C_LINE,C_NUM,C_STATUS,C_HOUR2) VALUES(99,2,131073,'43200000000')");bridge.poll();
+ assert.ok(bridge.state.active[id(1)]);assert.equal(bridge.state.active[id(2)],undefined);assert.equal(bridge.state.runResults[id(1)].heat,1);
+ now+=2000;live.tick({allowStart:false});bridge.poll();
+ const arrived=bridge.state;
+ for(const bib of [13,14]){assert.equal(arrived.runResults[id(bib)].status,'finish');assert.equal(arrived.runResults[id(bib)].heat,2);assert.equal(arrived.runResults[id(bib)].runId,runIds.get(String(bib)));assert.equal(arrived.runResults[id(bib)].totalEligible,false);assert.equal(arrived.runResults[id(bib)].totalTimeMs,null);assert.ok(arrived.runResults[id(bib)].timeMs>0);}
+ assert.equal(arrived.runResults[id(1)].timeMs,1210);assert.equal(arrived.runResults[id(1)].totalTimeMs,2320);
+ complete();assert.equal(Object.values(bridge.state.results).filter(r=>r.status==='finish').length,12);assert.equal(Object.keys(bridge.state.active).length,0);assert.equal(bridge.sessionId,session);
+ await until(()=>messages.some(m=>m.type==='state.delta'&&m.changes.runResults?.upsert.some(r=>r.id===id(13)&&r.heat===2&&r.status==='finish')));
+ live.reset();bridge.poll();assert.equal(Object.keys(bridge.state.results).length,0);assert.equal(Object.keys(bridge.state.active).length,0);
+});
+
+test('synthetic CLI prepares a fresh paused observed-code simulation without an archive', async t => {
+ const folder=path.resolve('local','synthetic-cli-test-'+crypto.randomUUID()),{spawn}=require('node:child_process');
+ const child=spawn(process.execPath,[path.resolve('scripts/live-replay.cjs'),'--synthetic','--folder',folder,'--run-ms','1000'],{stdio:['pipe','ignore','pipe']});
+ let error='';child.stderr.on('data',bytes=>error+=bytes);
+ t.after(async()=>{if(child.exitCode===null){const exited=new Promise(r=>child.once('exit',r));child.kill();await exited;}fs.rmSync(folder,{recursive:true,force:true});});
+ const status=path.join(folder,'simulation-status.json');await until(()=>fs.existsSync(status)||child.exitCode!==null);
+ assert.equal(child.exitCode,null,error);assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).running,false);
+ const config=loadConfig(path.join(folder,'config.json'));
+ assert.equal(config.timing.mode,'simulation');assert.deepEqual(config.timing.startStatuses,[131072]);
+ const reader=new VolaReader(config);try{assert.deepEqual(reader.read().active,{});assert.deepEqual(reader.read().results,{});}finally{reader.close();}
+ const exited=new Promise(r=>child.once('exit',r));child.stdin.write('quit\n');await exited;assert.equal(child.exitCode,0);
 });

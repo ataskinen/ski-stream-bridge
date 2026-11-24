@@ -1,3 +1,4 @@
+const START_STATUS_DEFAULTS = Object.freeze({ records: Object.freeze([131072]), simulation: Object.freeze([0]) });
 function validResult(row) {
   return row && row.C_STATUS === 0 && (row.C_PENALTY == null || row.C_PENALTY === 0) && Number.isInteger(row.C_TIME) && row.C_TIME > 0 && row.C_TIME <= 86400000;
 }
@@ -6,8 +7,9 @@ function timingConfig(value, heats) {
   if (!['records', 'simulation'].includes(value.mode) || !Number.isInteger(value.heat) || !heats.includes(value.heat) || value.heat !== Math.max(...heats)) throw Error('Timing heat must be the last selected standings heat.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value.date) || !Number.isFinite(Date.parse(value.date + 'T00:00:00Z'))) throw Error('Timing needs a calendar date.');
   if (!Number.isInteger(value.utcOffsetMinutes) || Math.abs(value.utcOffsetMinutes) > 840) throw Error('Invalid timing UTC offset.');
-  if (!Array.isArray(value.startStatuses) || !value.startStatuses.length || value.startStatuses.length > 32 || value.startStatuses.some(s => !Number.isInteger(s) || s < 0 || s > 2147483647)) throw Error('Explicit verified startStatuses are required.');
-  return { ...value, startStatuses: [...new Set(value.startStatuses)] };
+  const startStatuses = value.startStatuses === undefined ? START_STATUS_DEFAULTS[value.mode] : value.startStatuses;
+  if (!Array.isArray(startStatuses) || !startStatuses.length || startStatuses.length > 32 || startStatuses.some(s => !Number.isInteger(s) || s < 0 || s > 2147483647)) throw Error('Invalid custom startStatuses.');
+  return { ...value, startStatuses: [...new Set(startStatuses)] };
 }
 function addTiming(state, cache, config, now = Date.now()) {
   const timing = timingConfig(config.timing, config.heats);
@@ -15,7 +17,7 @@ function addTiming(state, cache, config, now = Date.now()) {
   if (timing.mode === 'off') return state;
   state.competition.runningTimersSupported = true;
   state.competition.timingMode = timing.mode;
-  if (timing.mode === 'records') state.competition.warnings.push('Experimental start-record mapping: validate status codes, event date and timing-device clock against live VOLA.');
+  if (timing.mode === 'records') state.competition.warnings.push('Experimental live-start mapping: supported manual starts; validate event date and timing-device clock against live VOLA.');
   const midnight = Date.parse(timing.date + 'T00:00:00Z') - timing.utcOffsetMinutes * 60000;
   const readHeats = config.autoStandings ? config.readHeats : [timing.heat];
   const competitors = new Map(Object.values(state.competitors).map(p => [p.bib, p]));
@@ -51,4 +53,4 @@ function addTiming(state, cache, config, now = Date.now()) {
   }
   return state;
 }
-module.exports = { timingConfig, addTiming, validResult };
+module.exports = { timingConfig, addTiming, validResult, START_STATUS_DEFAULTS };
