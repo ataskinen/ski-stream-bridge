@@ -1,0 +1,12 @@
+{
+  "folder": "C:/VOLA/Events",
+  "event": 3,
+  "autoStandings": true,
+  "bind": "127.0.0.1",
+  "port": 8789,
+  "pollIntervalMs": 250,
+  "reconcileIntervalMs": 5000,
+  "keyFile": "local/connection-key",
+  "debug": false,
+  "logDirectory": "local/logs"
+}

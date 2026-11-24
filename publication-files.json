@@ -1,0 +1,32 @@
+{
+  "files": [
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    "LICENSE",
+    "PROTOCOL.md",
+    "README.md",
+    "config.example.json",
+    "docs/images/control-panel.jpg",
+    "package-lock.json",
+    "package.json",
+    "publication-files.json",
+    "scripts/build-windows.ps1",
+    "scripts/check-publication.cjs",
+    "scripts/live-replay.cjs",
+    "scripts/replay.cjs",
+    "src/cli.cjs",
+    "src/config.cjs",
+    "src/control.cjs",
+    "src/live-replay.cjs",
+    "src/log.cjs",
+    "src/reader.cjs",
+    "src/replay.cjs",
+    "src/server.cjs",
+    "src/timing.cjs",
+    "start-mac.sh",
+    "start-windows.cmd",
+    "test/bridge.test.cjs",
+    "test/publication.test.cjs"
+  ],
+  "imageSha256": "d630f07f3f0667ab5498d7af398ff32ec015d26cafc41c26fc6b64b27cdd15f7"
+}
